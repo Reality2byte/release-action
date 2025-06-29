@@ -64,10 +64,12 @@ class Action {
             await this.artifactDestroyer.destroyArtifacts(releaseId);
         }
         const artifacts = this.inputs.artifacts;
+        let assetUrls = {};
         if (artifacts.length > 0) {
-            await this.uploader.uploadArtifacts(artifacts, releaseId, uploadUrl);
+            assetUrls = await this.uploader.uploadArtifacts(artifacts, releaseId, uploadUrl);
         }
         this.outputs.applyReleaseData(releaseData);
+        this.outputs.applyAssetUrls(assetUrls);
     }
     async createOrUpdateRelease() {
         if (this.inputs.allowUpdates) {
@@ -454,19 +456,25 @@ class GithubArtifactUploader {
         if (this.replacesExistingArtifacts) {
             await this.deleteUpdatedArtifacts(artifacts, releaseId);
         }
+        const assetUrls = {};
         for (const artifact of artifacts) {
-            await this.uploadArtifact(artifact, releaseId, uploadUrl);
+            const assetUrl = await this.uploadArtifact(artifact, releaseId, uploadUrl);
+            if (assetUrl !== null) {
+                assetUrls[artifact.name] = assetUrl;
+            }
         }
+        return assetUrls;
     }
     async uploadArtifact(artifact, releaseId, uploadUrl, retry = 3) {
         try {
             core.debug(`Uploading artifact ${artifact.name}...`);
-            await this.releases.uploadArtifact(uploadUrl, artifact.contentLength, artifact.contentType, artifact.readFile(), artifact.name, releaseId);
+            const assetResponse = await this.releases.uploadArtifact(uploadUrl, artifact.contentLength, artifact.contentType, artifact.readFile(), artifact.name, releaseId);
+            return assetResponse.data.browser_download_url;
         }
         catch (error) {
             if (error.status >= 500 && retry > 0) {
                 core.warning(`Failed to upload artifact ${artifact.name}. ${error.message}. Retrying...`);
-                await this.uploadArtifact(artifact, releaseId, uploadUrl, retry - 1);
+                return this.uploadArtifact(artifact, releaseId, uploadUrl, retry - 1);
             }
             else {
                 if (this.throwsUploadErrors) {
@@ -474,6 +482,7 @@ class GithubArtifactUploader {
                 }
                 else {
                     core.warning(`Failed to upload artifact ${artifact.name}. ${error.message}.`);
+                    return null;
                 }
             }
         }
@@ -891,6 +900,10 @@ class CoreOutputs {
         core.setOutput("upload_url", releaseData.upload_url);
         core.setOutput("tarball_url", releaseData.tarball_url || "");
         core.setOutput("zipball_url", releaseData.zipball_url || "");
+    }
+    applyAssetUrls(assetUrls) {
+        const assetUrlsJson = JSON.stringify(assetUrls);
+        core.setOutput("assets", assetUrlsJson);
     }
 }
 exports.CoreOutputs = CoreOutputs;
